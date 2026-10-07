@@ -1,0 +1,86 @@
+import sys
+import os
+
+INPUT_HEX = "firmware.hex"          # Укажи имя твоего исходного HEX файла
+OUTPUT_HEX = "firmware_patched.hex" # Имя готового автономного HEX
+
+# Адрес в памяти STM32: 0x080010a0
+TARGET_ADDRESS = 0x080010A0
+
+# Байты подмены: подменяем вызов 41 80 00 08 на 97 80 00 08 (FUN_08008096+1)
+OLD_BYTES = bytes([0x41, 0x80, 0x00, 0x08])
+NEW_BYTES = bytes([0x97, 0x80, 0x00, 0x08])
+
+def calculate_checksum(line_bytes):
+    # Контрольная сумма Intel HEX: 0x100 - (sum % 0x100)
+    total_sum = sum(line_bytes) & 0xFF
+    return (0x100 - total_sum) & 0xFF
+
+def patch_intel_hex():
+    if not os.path.exists(INPUT_HEX):
+        print(f"[!] Ошибка: Файл '{INPUT_HEX}' не найден!")
+        print("    Переименуй свой HEX файл в firmware.hex или укажи его имя в скрипте.")
+        return
+
+    base_address = 0
+    patched = False
+
+    with open(INPUT_HEX, "r") as f:
+        lines = f.readlines()
+
+    new_lines = []
+
+    for line_num, line in enumerate(lines):
+        line = line.strip()
+        if not line.startswith(":"):
+            new_lines.append(line + "\n")
+            continue
+
+        # Разбор строки Intel HEX
+        data_bytes = bytearray.fromhex(line[1:])
+        length = data_bytes[0]
+        offset = (data_bytes[1] << 8) | data_bytes[2]
+        record_type = data_bytes[3]
+
+        # Тип 04: Extended Linear Address Record (задает старшие 16 бит адреса)
+        if record_type == 0x04:
+            base_address = ((data_bytes[4] << 8) | data_bytes[5]) << 16
+
+        # Тип 00: Data Record
+        elif record_type == 0x00:
+            current_abs_addr = base_address + offset
+
+            # Проверяем, попадает ли целевой адрес 0x080010A0 в эту строку HEX
+            if current_abs_addr <= TARGET_ADDRESS < current_abs_addr + length:
+                byte_offset = TARGET_ADDRESS - current_abs_addr
+                
+                # Проверяем старые байты перед заменой
+                current_data = data_bytes[4 + byte_offset : 4 + byte_offset + 4]
+                print(f"[i] Найдена целевая строка на адресе {hex(TARGET_ADDRESS)}.")
+                print(f"    Текущие байты: {current_data.hex().upper()}")
+
+                # Выполняем замену 4 байт
+                data_bytes[4 + byte_offset : 4 + byte_offset + 4] = NEW_BYTES
+                
+                # Пересчитываем контрольную сумму Intel HEX (последний байт)
+                data_payload = data_bytes[:-1]
+                new_checksum = calculate_checksum(data_payload)
+                data_bytes[-1] = new_checksum
+
+                # Собираем строку обратно
+                line = ":" + data_bytes.hex().upper()
+                patched = True
+                print(f"[+] Успешно заменено на: {NEW_BYTES.hex().upper()}")
+                print(f"[+] Новая контрольная сумма строки пересчитана!")
+
+        new_lines.append(line + "\n")
+
+    if patched:
+        with open(OUTPUT_HEX, "w") as f:
+            f.writelines(new_lines)
+        print(f"\n[ГОТОВО] Пропатченный HEX сохранен в: {OUTPUT_HEX}")
+    else:
+        print("\n[!] Не удалось найти адрес 0x080010A0 в HEX файле.")
+
+if __name__ == "__main__":
+    patch_intel_hex()
