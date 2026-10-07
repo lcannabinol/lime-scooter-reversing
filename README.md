@@ -108,7 +108,7 @@ patch_for_60sec_unlock
 ---
 
 ## См. также
-
+- (https://github.com/lcannabinol/lime-scooter-reversing)
 - [Pikokosan/Lime_Gen3_IoT_Replacement](https://github.com/Pikokosan/Lime_Gen3_IoT_Replacement) — полностью рабочее решение с IoT-эмуляцией.
 Lime Scooter Reversing 
 =======================
