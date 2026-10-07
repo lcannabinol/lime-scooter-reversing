@@ -1,3 +1,117 @@
+# Lime Gen3 — Complete Detachment from IoT/Aux Controllers
+
+**patch_for_60sec_unlock**
+
+> A solution for owners of Lime Gen3 scooters (STM32F103) who want to **completely abandon the IoT module, emulators, and any external auxiliary controllers**.  
+> The goal is not beauty or a speed display, but **simplicity, reliability, and minimal hardware**.
+
+---
+
+## ⚠️ Disclaimer
+
+The author is **not a professional developer** (weak in code, assembly, and programming in general). Everything was done by trial and error and with the help of AI.  
+Already **burned 2 × ESP32**.  
+I fundamentally **do not want to spend any more money** on this scooter.  
+Released "as is". If you have experience — pull requests are welcome.
+
+Many thanks to [Pikokosan/Lime_Gen3_IoT_Replacement](https://github.com/Pikokosan/Lime_Gen3_IoT_Replacement) — half a year of riding on this solution, the only fully working one.
+
+---
+
+## 🎯 What Has Been Achieved
+
+- **Unlock on wake** without IoT and without an emulator.
+- Uses the `lockctrl` signal (an input that must be **pulled up to HIGH**).
+- HIGH is supplied through a **large resistor** (if not using a 12 V step-down converter).
+
+---
+
+## 🕒 Behavior (Clarified)
+
+### Main Work Cycle
+
+| Step | Action | Result |
+|---|---|---|
+| 1 | Briefly apply **+2 sec** (HIGH) to `lockctrl` while in `sleep` & `lock` state | Scooter starts, rides |
+| 2 | Remove + from `lockctrl` pin (LOW) | Starts the **60-second timer** (independent of anything) for the transition to sleep |
+| 3 | After **60 sec** | Throttle stops responding (lock) regardless of `lockctrl` pin HIGH or LOW; the light stays on for ~2 sec if `lockctrl` was LOW immediately after the work cycle started |
+| 4 | After another **2–3 sec** | **Sleep & lock** occur — the light goes off |
+| 5 | Only after **sleep & lock** | Re-applying + (HIGH) to `lockctrl` pin for >=2 sec starts a **new work cycle** — you can ride again |
+
+### Key Nuance
+
+> **While the controller has not yet gone to sleep (the light is on), re-applying + to `lockctrl` only resets the 60-second timeout. The light stays on, but there is no motion.**  
+> A full work cycle and riding are only possible **after the scooter has gone to sleep and turned the light off**.
+
+### What Resets the Timer
+
+- **Full power removal from the controller.**
+- **Reset via 7 pin STM32F103** (short to GND).
+
+> Current logic: the 60-second timeout starts **after removing +** from the `lockctrl` pin (it gets the `LOW` flag) and **does not depend** on the lock/unlock state. **Sleep** occurs **after the 60-second cycle ends while the `lockctrl` pin is LOW**. Until sleep occurs, a new work cycle cannot be started — only the controller can be reset.
+
+---
+
+## 🔧 Current Implementation (Temporary but Working)
+
+- HIGH is **permanently** held on the `lockctrl` pin (HIGH).
+- The RST **7 pin STM32F103** is wired to a button → short to GND = **reset the controller**.
+- On lock → button → restart → **unlock faster** than waiting 3 sec after the work cycle until it goes to sleep.
+
+This is faster than waiting for sleep after the 60-second cycle.  
+You can also use:
+- an automotive relay,
+- a 12 V converter,
+- other methods of resetting the controller.
+
+Previously tried a variant with a button + capacitor + resistor — touch less than 0.2 sec, HIGH <=3 sec for unlock. But if you don't hold HIGH >2 sec — you get a 60-second timeout with **light but no throttle response**.  
+**The 7 pin responds faster.**
+
+---
+
+## 🧠 Under the Hood
+
+- MCU: **STM32F103**
+- `lockctrl` input — control lock signal.
+- The algorithm is then expanded into RAM, so as I understand, finding it by dump reverse engineering is not so easy.
+
+---
+
+## 🎯 Wishes (TODO / Roadmap)
+
+- [ ] Find and disable the logic waiting for HB and other conditions to prevent LOCK
+- [ ] Dig into the **speed** and **current** limit tables.
+- [ ] Move **start** from 3 km/h to 0 km/h (zero-start)
+- [ ] Settings close to custom firmware.
+
+---
+
+## 🛠️ Tools
+
+- **ST-Link V2**
+- Flashing via **Android app** — convenient for testing patched firmware.
+
+---
+
+## 🤝 Help
+
+Any help is welcome:
+- find the places in the firmware responsible for timeouts,
+- understand where the RAM algorithm expands,
+- speed/current limit tables,
+- zero-start.
+
+---
+
+## 📜 License
+
+As is. Use at your own risk.
+
+---
+
+## See Also
+
+- [Pikokosan/Lime_Gen3_IoT_Replacement](https://github.com/Pikokosan/Lime_Gen3_IoT_Replacement) — a fully working solution with IoT emulation.
 ## 📜 Лицензия
 
 Как получится. Используйте на свой страх и риск.
