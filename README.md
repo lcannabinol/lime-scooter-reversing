@@ -108,7 +108,7 @@
 | `Pyghidra_helper.py` | Помощник для Ghidra при реверсе прошивки |
 | `Lime Gen 3 Motor Controller Readout disassembled.ASM` | Дизассемблированная прошивка |
 | `Lime Gen 3 Motor Controller Readout.HEX` / `FW.hex` | Readout прошивки (Intel HEX) |
-| `my_ghidra_RE_Lime Gen3 25 kmh unlocked.hex` | Патченная прошивка (25 км/ч, unlocked) |
+| `my_ghidra_RE_Lime Gen3 25 kmh unlocked.hex` | Ghidra ASM-дамп реверса (не прошивка; см. ADDRBOOK §6b) |
 | `dumps/ram_*.bin` | Дампы RAM в разных состояниях (lock, ride, 30s/60s и т.д.) — все .bin-файлы хранятся в `dumps/` |
 
 ---
