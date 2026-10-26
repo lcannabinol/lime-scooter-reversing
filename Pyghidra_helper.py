@@ -87,7 +87,13 @@ IMPORTANT_CONSTANTS = {
 
 # Key code locations (for comments / bookmarks)
 KEY_LOCATIONS = {
-    0x080010A0: "PATCH_SITE_pointer_swap",
+    # 0x080010A0 pointer-swap patch DISPROVED by physical test 2026-10-27:
+    # the table 0x0800102c-0x080010e8 has zero xrefs from code (dead data).
+    0x080010A0: "DEAD_TABLE_ptr_to_FUN_08008040_do_not_patch",
+    0x080010D4: "DEAD_TABLE_ptr_to_FUN_08008096",
+    0x0800017C: "CONST_0x258_loader_1",              # mov.w rX,#0x258
+    0x080042E4: "CONST_0x258_loader_2",              # mov.w rX,#0x258
+    0x080080A0: "CONST_0x258_loader_3_in_FUN_08008096",
     0x08006098: "IOT_FLAG_LOAD_0x20000477",
     0x0800609a: "IOT_FLAG_ldrb",
     0x0800609c: "IOT_FLAG_cmp_#1",

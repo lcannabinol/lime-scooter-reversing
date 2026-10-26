@@ -32,8 +32,9 @@
 - Используется сигнал `lockctrl` (вход, который нужно **подтянуть на HIGH**).
 - Подача HIGH через **большое сопротивление** (если не использовать понижающий
   преобразователь на 12 В).
-- Рабочий патч прошивки: [`patch_for_60sec_unlock`](patch_for_60sec_unlock)
-  (детали и точки патча — в [ADDRBOOK.md](ADDRBOOK.md)).
+- Патч прошивки [`patch_for_60sec_unlock`](patch_for_60sec_unlock) **не прошёл
+  физический тест** (правит неиспользуемую таблицу; подробности и актуальные
+  кандидаты — в [ADDRBOOK.md](ADDRBOOK.md), раздел 5).
 
 ---
 
@@ -104,7 +105,7 @@
 | Файл | Что это |
 |---|---|
 | `ADDRBOOK.md` | **Адресная книга реверса**: функции, адреса flash/RAM, цепочки, гипотезы |
-| `patch_for_60sec_unlock` | Python-скрипт патча Intel HEX (60-сек разблокировка) |
+| `patch_for_60sec_unlock` | Python-скрипт патча Intel HEX (⚠️ не работает на стенде, оставлен для истории) |
 | `Pyghidra_helper.py` | Помощник для Ghidra при реверсе прошивки |
 | `Lime Gen 3 Motor Controller Readout disassembled.ASM` | Дизассемблированная прошивка |
 | `Lime Gen 3 Motor Controller Readout.HEX` / `FW.hex` | Readout прошивки (Intel HEX) |
