@@ -1,0 +1,798 @@
+# -*- coding: utf-8 -*-
+# LimeRE_Helper.py
+#
+# @author  lcannabinol + Grok
+# @category Lime.RE
+# @menupath Tools.Lime RE Helper
+# @toolbar
+
+"""
+Lime Gen3 — помощник по реверсу контроллера мотора.
+Нормальный resizable-диалог (не убогий askChoice).
+"""
+
+from ghidra.program.model.symbol import SourceType
+from ghidra.program.model.listing import CodeUnit
+from ghidra.util.exception import CancelledException
+
+from docking import DialogComponentProvider
+from docking import DockingWindowManager
+
+from java.awt import BorderLayout, Dimension, Font
+from java.awt.event import MouseAdapter, KeyEvent, KeyAdapter
+from javax.swing import (
+    JPanel, JScrollPane, JList, JTextArea, JLabel,
+    DefaultListModel, ListSelectionModel, BorderFactory, JSplitPane,
+    SwingConstants
+)
+from javax.swing.event import ListSelectionListener
+
+# ---------------------------------------------------------------------------
+# Py2 / Py3
+# ---------------------------------------------------------------------------
+try:
+    _string_types = (str, unicode)
+except NameError:
+    _string_types = (str,)
+
+
+def _fmt(s, *args):
+    return s.format(*[str(a) for a in args])
+
+
+# ==============================================================================
+#  ИЗВЕСТНЫЕ СИМВОЛЫ
+# ==============================================================================
+
+KNOWN_FUNCTIONS = {
+    0x08001688: "early_init_clear_flag_46E",
+    0x08002024: "process_params_and_state",
+    0x08002cd6: "lowlevel_peripheral_write_A",
+    0x08002cda: "lowlevel_peripheral_write_B",
+    0x08003706: "timer_struct_init",
+    0x08003b32: "timer_handler_CMP_0x3C",
+    0x08003EF0: "buffer_table_ops_A",
+    0x08003f88: "reset_state_caller",
+    0x08004064: "buffer_table_ops_B",
+    0x0800407E: "reset_state_clear_buffer",
+    0x08005ed0: "motor_control_main",
+    0x08006bc4: "lock_flag_chain_B",
+    0x08006f72: "apply_saved_target_speed",
+    0x08006faa: "lock_flag_chain_A",
+    0x080073fc: "main_state_machine",
+    0x08008040: "ptr_target_old",
+    0x08008096: "ptr_target_new",
+}
+
+KNOWN_RAM = {
+    0x20000035: "sec_counter_or_lock_timer",
+    0x20000091: "motor_internal_counter",
+    0x20000158: "traction_lock_flag",
+    0x20000164: "cyclic_buffer_ptr",
+    0x200003A0: "timer_struct_base",
+    0x200003BC: "timer_bitmask_src",
+    0x200003C8: "unlock_elapsed_counter",
+    0x20000426: "state_counter_or_flag",
+    0x20000444: "iot_timeout_multiplier",
+    0x2000046E: "global_state_flag",
+    0x20000472: "aux_flag_or_counter",
+    0x20000477: "iot_active_flag",
+    0x20000489: "cyclic_buf_index",
+}
+
+KEY_LOCATIONS = {
+    0x080010A0: "PATCH_SITE_pointer_swap",
+    0x08006098: "IOT_FLAG_LOAD_0x20000477",
+    0x0800609a: "IOT_FLAG_ldrb",
+    0x0800609c: "IOT_FLAG_cmp_1",
+    0x0800609e: "IOT_FLAG_bne_GATE",
+    0x08007922: "TIMER_cmp_0x258",
+    0x08007fb4: "old_suspected_lock_flag_ptr",
+}
+
+# id, short title, Russian description
+MENU_ACTIONS = [
+    ("apply_names",
+     "1. Применить все известные имена",
+     "Переименовывает функции, ставит labels на RAM и ключевые точки патча.\n"
+     "Рекомендуется запустить первым делом после загрузки прошивки."),
+    ("trace_callers",
+     "2. Кто вызывает функцию (callers)",
+     "Показывает все места, откуда вызывается выбранная функция.\n"
+     "Нужен адрес внутри функции."),
+    ("trace_callees",
+     "3. Кого вызывает функция (callees)",
+     "Список всех функций, которые вызывает выбранная.\n"
+     "Нужен адрес внутри функции."),
+    ("xrefs_to",
+     "4. Ссылки на адрес (XREF to)",
+     "Все cross-references на указанный адрес."),
+    ("xrefs_range",
+     "5. Ссылки в диапазон адресов",
+     "Все ссылки, которые попадают в заданный диапазон [start…end]."),
+    ("find_const",
+     "6. Поиск константы в коде",
+     "Ищет инструкции с immediate: 0x258 (таймер 60с), 0x3C и другие пороги."),
+    ("rename",
+     "7. Переименовать функцию / label",
+     "Задать своё имя функции или создать label по адресу."),
+    ("comment",
+     "8. Добавить комментарий",
+     "Plate-комментарий (над блоком) или EOL (в конце строки)."),
+    ("func_info",
+     "9. Информация о функции",
+     "Размер, сигнатура, callers и callees одной функцией."),
+    ("bookmarks",
+     "10. Закладки на ключевые точки",
+     "Bookmarks на IoT-gate, timer cmp, patch site и т.д.\n"
+     "Смотреть: Window → Bookmarks."),
+    ("goto",
+     "11. Перейти к известному символу",
+     "Быстрая навигация по всем зашитым функциям / RAM / key sites."),
+    ("exit",
+     "0. Выход",
+     "Закрыть помощник."),
+]
+
+
+# ==============================================================================
+#  ДИАЛОГ МЕНЮ
+# ==============================================================================
+
+class MenuDialog(DialogComponentProvider):
+
+    def __init__(self):
+        # title, modal, status, buttons, canRunTasks
+        super(MenuDialog, self).__init__(u"Lime RE Helper — меню", True, True, True, False)
+
+        self.selected_id = None
+        self._cancelled = True
+
+        self.setResizable(True)
+        self.setRememberSize(True)
+        self.setRememberLocation(True)
+        self.setPreferredSize(720, 420)
+        try:
+            self.setMinimumSize(Dimension(500, 300))
+        except Exception:
+            pass
+
+        self.addWorkPanel(self._build_panel())
+        self.addOKButton()
+        self.addCancelButton()
+        self.setOkButtonText(u"Выполнить")
+        self.setCancelButtonText(u"Закрыть")
+        self.setDefaultButton(self.okButton)
+        self.setStatusText(u"Выбери действие и нажми «Выполнить» (или двойной клик / Enter).")
+
+    def _build_panel(self):
+        model = DefaultListModel()
+        self._ids = []
+        self._descs = []
+        for aid, title, desc in MENU_ACTIONS:
+            model.addElement(title)
+            self._ids.append(aid)
+            self._descs.append(desc)
+
+        self.list = JList(model)
+        self.list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        self.list.setSelectedIndex(0)
+        self.list.setVisibleRowCount(12)
+        try:
+            self.list.setFont(Font("Dialog", Font.PLAIN, 13))
+        except Exception:
+            pass
+
+        scroll_list = JScrollPane(self.list)
+        scroll_list.setBorder(BorderFactory.createTitledBorder(u"Действия"))
+
+        self.desc_area = JTextArea()
+        self.desc_area.setEditable(False)
+        self.desc_area.setLineWrap(True)
+        self.desc_area.setWrapStyleWord(True)
+        self.desc_area.setText(self._descs[0])
+        try:
+            self.desc_area.setFont(Font("Dialog", Font.PLAIN, 13))
+        except Exception:
+            pass
+        scroll_desc = JScrollPane(self.desc_area)
+        scroll_desc.setBorder(BorderFactory.createTitledBorder(u"Описание"))
+
+        outer = self
+
+        class Sel(ListSelectionListener):
+            def valueChanged(self, event):
+                if event.getValueIsAdjusting():
+                    return
+                idx = outer.list.getSelectedIndex()
+                if idx >= 0:
+                    outer.desc_area.setText(outer._descs[idx])
+
+        self.list.addListSelectionListener(Sel())
+
+        class Dbl(MouseAdapter):
+            def mouseClicked(self, event):
+                if event.getClickCount() == 2:
+                    outer.okCallback()
+
+        self.list.addMouseListener(Dbl())
+
+        class KeyH(KeyAdapter):
+            def keyPressed(self, event):
+                if event.getKeyCode() == KeyEvent.VK_ENTER:
+                    outer.okCallback()
+
+        self.list.addKeyListener(KeyH())
+
+        split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, scroll_list, scroll_desc)
+        split.setResizeWeight(0.45)
+        split.setDividerLocation(320)
+
+        root = JPanel(BorderLayout(8, 8))
+        root.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+        root.add(split, BorderLayout.CENTER)
+
+        hint = JLabel(u"Двойной клик или Enter — выполнить. Край окна можно тянуть.")
+        hint.setHorizontalAlignment(SwingConstants.LEFT)
+        root.add(hint, BorderLayout.SOUTH)
+        return root
+
+    def okCallback(self):
+        idx = self.list.getSelectedIndex()
+        if idx < 0:
+            self.setStatusText(u"Сначала выбери пункт в списке.")
+            return
+        self.selected_id = self._ids[idx]
+        self._cancelled = False
+        self.close()
+
+    def cancelCallback(self):
+        self.selected_id = None
+        self._cancelled = True
+        self.close()
+
+    def was_cancelled(self):
+        return self._cancelled
+
+
+def show_main_menu():
+    dlg = MenuDialog()
+    DockingWindowManager.showDialog(dlg)
+    if dlg.was_cancelled():
+        return None
+    return dlg.selected_id
+
+
+# ==============================================================================
+#  ДИАЛОГ ВЫБОРА СИМВОЛА
+# ==============================================================================
+
+class SymbolPickDialog(DialogComponentProvider):
+    def __init__(self, items, title=u"Выбор символа"):
+        super(SymbolPickDialog, self).__init__(title, True, True, True, False)
+        self.selected = None
+        self._cancelled = True
+        self._items = items
+
+        self.setResizable(True)
+        self.setRememberSize(True)
+        self.setPreferredSize(640, 400)
+        self.addWorkPanel(self._build())
+        self.addOKButton()
+        self.addCancelButton()
+        self.setOkButtonText(u"Перейти")
+        self.setCancelButtonText(u"Отмена")
+
+    def _build(self):
+        model = DefaultListModel()
+        for display, _val in self._items:
+            model.addElement(display)
+        self.list = JList(model)
+        self.list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        if model.size() > 0:
+            self.list.setSelectedIndex(0)
+        try:
+            self.list.setFont(Font("Monospaced", Font.PLAIN, 12))
+        except Exception:
+            pass
+
+        outer = self
+
+        class Dbl(MouseAdapter):
+            def mouseClicked(self, event):
+                if event.getClickCount() == 2:
+                    outer.okCallback()
+
+        self.list.addMouseListener(Dbl())
+
+        scroll = JScrollPane(self.list)
+        scroll.setBorder(BorderFactory.createTitledBorder(u"Символы (F=функция, R=RAM, K=ключ)"))
+        panel = JPanel(BorderLayout())
+        panel.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6))
+        panel.add(scroll, BorderLayout.CENTER)
+        return panel
+
+    def okCallback(self):
+        idx = self.list.getSelectedIndex()
+        if idx < 0:
+            self.setStatusText(u"Выбери строку.")
+            return
+        self.selected = self._items[idx][1]
+        self._cancelled = False
+        self.close()
+
+    def cancelCallback(self):
+        self.selected = None
+        self._cancelled = True
+        self.close()
+
+    def was_cancelled(self):
+        return self._cancelled
+
+
+class ConstPickDialog(DialogComponentProvider):
+    def __init__(self):
+        super(ConstPickDialog, self).__init__(u"Поиск константы", True, True, True, False)
+        self.selected = None
+        self._cancelled = True
+        self._vals = [
+            (0x258, u"0x258 — таймер ~60 секунд (основной)"),
+            (0x3C,  u"0x3C  — 60 / порог"),
+            (0x15,  u"0x15"),
+            (0x3D,  u"0x3D"),
+            (0xC9,  u"0xC9"),
+            (0x12C, u"0x12C"),
+            (0x3E9, u"0x3E9"),
+            (0x7D0, u"0x7D0"),
+            (None,  u"Своё значение…"),
+        ]
+        self.setResizable(True)
+        self.setPreferredSize(480, 320)
+        self.addWorkPanel(self._build())
+        self.addOKButton()
+        self.addCancelButton()
+        self.setOkButtonText(u"Искать")
+        self.setCancelButtonText(u"Отмена")
+
+    def _build(self):
+        model = DefaultListModel()
+        for _v, label in self._vals:
+            model.addElement(label)
+        self.list = JList(model)
+        self.list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        self.list.setSelectedIndex(0)
+        outer = self
+
+        class Dbl(MouseAdapter):
+            def mouseClicked(self, event):
+                if event.getClickCount() == 2:
+                    outer.okCallback()
+
+        self.list.addMouseListener(Dbl())
+        scroll = JScrollPane(self.list)
+        scroll.setBorder(BorderFactory.createTitledBorder(u"Константа"))
+        p = JPanel(BorderLayout())
+        p.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6))
+        p.add(scroll, BorderLayout.CENTER)
+        return p
+
+    def okCallback(self):
+        idx = self.list.getSelectedIndex()
+        if idx < 0:
+            return
+        self.selected = self._vals[idx][0]
+        self._cancelled = False
+        self.close()
+
+    def cancelCallback(self):
+        self.selected = None
+        self._cancelled = True
+        self.close()
+
+    def was_cancelled(self):
+        return self._cancelled
+
+
+# ==============================================================================
+#  HELPERS
+# ==============================================================================
+
+def to_addr(x):
+    if x is None:
+        return None
+    if hasattr(x, "getOffset"):
+        return x
+    if isinstance(x, _string_types):
+        s = x.strip().lower()
+        if s.startswith("0x"):
+            s = s[2:]
+        return currentProgram.getAddressFactory().getAddress("0x" + s)
+    return currentProgram.getAddressFactory().getAddress("0x%x" % int(x))
+
+
+def get_function_at_or_containing(addr):
+    fm = currentProgram.getFunctionManager()
+    f = fm.getFunctionAt(addr)
+    if f is None:
+        f = fm.getFunctionContaining(addr)
+    return f
+
+
+def safe_rename_function(addr, new_name):
+    addr = to_addr(addr)
+    f = get_function_at_or_containing(addr)
+    if f is None:
+        f = createFunction(addr, new_name)
+        if f is not None:
+            println(_fmt("[+] Создана функция {} @ {}", new_name, addr))
+            return True
+        println(_fmt("[-] Нет функции @ {}", addr))
+        return False
+    old = f.getName()
+    if old == new_name:
+        return True
+    try:
+        f.setName(new_name, SourceType.USER_DEFINED)
+        println(_fmt("[+] {}  →  {}   ({})", old, new_name, addr))
+        return True
+    except Exception as e:
+        println(_fmt("[!] Ошибка переименования {} → {}: {}", old, new_name, e))
+        return False
+
+
+def safe_create_label(addr, name, primary=True):
+    addr = to_addr(addr)
+    try:
+        createLabel(addr, name, primary)
+        println(_fmt("[+] Label {} @ {}", name, addr))
+        return True
+    except Exception:
+        sym = getSymbolAt(addr)
+        if sym is not None and sym.getName() == name:
+            return True
+        try:
+            createLabel(addr, name, False)
+            println(_fmt("[+] Label (non-primary) {} @ {}", name, addr))
+            return True
+        except Exception as e2:
+            println(_fmt("[!] Label {} @ {} : {}", name, addr, e2))
+            return False
+
+
+def add_plate_comment(addr, text):
+    addr = to_addr(addr)
+    listing = currentProgram.getListing()
+    cu = listing.getCodeUnitAt(addr)
+    if cu is None:
+        cu = listing.getInstructionAt(addr)
+    if cu is not None:
+        existing = cu.getComment(CodeUnit.PLATE_COMMENT)
+        if existing is None:
+            existing = ""
+        if text not in existing:
+            new = (existing + "\n" + text).strip() if existing else text
+            cu.setComment(CodeUnit.PLATE_COMMENT, new)
+            println(_fmt("[+] Plate-комментарий @ {}", addr))
+    else:
+        println(_fmt("[-] Нет code unit @ {}", addr))
+
+
+def add_eol_comment(addr, text):
+    addr = to_addr(addr)
+    listing = currentProgram.getListing()
+    cu = listing.getCodeUnitAt(addr)
+    if cu is None:
+        cu = listing.getInstructionAt(addr)
+    if cu is not None:
+        cu.setComment(CodeUnit.EOL_COMMENT, text)
+        println(_fmt("[+] EOL-комментарий @ {}", addr))
+
+
+# ==============================================================================
+#  ACTIONS
+# ==============================================================================
+
+def action_apply_all_known_names():
+    println("=" * 60)
+    println(u"Применяю имена функций...")
+    cnt = 0
+    for addr, name in sorted(KNOWN_FUNCTIONS.items()):
+        if safe_rename_function(addr, name):
+            cnt += 1
+    println(_fmt("Функций: {}", cnt))
+
+    println(u"Ставлю labels на RAM...")
+    cnt = 0
+    for addr, name in sorted(KNOWN_RAM.items()):
+        if safe_create_label(addr, name):
+            cnt += 1
+    println(_fmt("RAM labels: {}", cnt))
+
+    println(u"Ключевые точки...")
+    for addr, desc in sorted(KEY_LOCATIONS.items()):
+        safe_create_label(addr, desc)
+        add_plate_comment(addr, "KEY: " + desc)
+
+    println(u"Готово.")
+    println("=" * 60)
+
+
+def action_trace_callers(addr=None):
+    if addr is None:
+        addr = askAddress(u"Callers", u"Адрес внутри целевой функции:")
+    addr = to_addr(addr)
+    f = get_function_at_or_containing(addr)
+    if f is None:
+        println(_fmt("[-] Нет функции @ {}", addr))
+        return
+
+    println(_fmt("=== Callers: {} @ {} ===", f.getName(), f.getEntryPoint()))
+    refs = getReferencesTo(f.getEntryPoint())
+    n = 0
+    seen = {}
+    for r in refs:
+        rt = r.getReferenceType()
+        if rt.isCall() or rt.isJump():
+            from_addr = r.getFromAddress()
+            key = str(from_addr)
+            if key in seen:
+                continue
+            seen[key] = True
+            caller_f = get_function_at_or_containing(from_addr)
+            name = caller_f.getName() if caller_f is not None else u"<нет функции>"
+            println(_fmt("  {}  →  {}   ({})", from_addr, name, rt))
+            n += 1
+    if n == 0:
+        println(u"  (ссылок call/jump нет)")
+    else:
+        println(_fmt("Всего: {}", n))
+
+
+def action_trace_callees(addr=None):
+    if addr is None:
+        addr = askAddress(u"Callees", u"Адрес внутри целевой функции:")
+    addr = to_addr(addr)
+    f = get_function_at_or_containing(addr)
+    if f is None:
+        println(_fmt("[-] Нет функции @ {}", addr))
+        return
+
+    println(_fmt("=== Callees: {} @ {} ===", f.getName(), f.getEntryPoint()))
+    insns = currentProgram.getListing().getInstructions(f.getBody(), True)
+    n = 0
+    seen = {}
+    while insns.hasNext():
+        insn = insns.next()
+        for r in insn.getReferencesFrom():
+            if r.getReferenceType().isCall():
+                to_a = r.getToAddress()
+                key = str(to_a)
+                if key in seen:
+                    continue
+                seen[key] = True
+                target_f = getFunctionAt(to_a)
+                name = target_f.getName() if target_f is not None else str(to_a)
+                println(_fmt("  {}  вызывает  {}  ({})", insn.getAddress(), name, to_a))
+                n += 1
+    if n == 0:
+        println(u"  (вызовов нет)")
+    else:
+        println(_fmt("Всего: {}", n))
+
+
+def action_xrefs_to_address(addr=None):
+    if addr is None:
+        addr = askAddress(u"XREF to", u"Целевой адрес:")
+    addr = to_addr(addr)
+    refs = getReferencesTo(addr)
+    println(_fmt("=== Ссылки НА {} ===", addr))
+    count = 0
+    for r in refs:
+        from_a = r.getFromAddress()
+        f = get_function_at_or_containing(from_a)
+        fname = f.getName() if f is not None else "-"
+        println(_fmt("  {}  ({})  <-  {}   [{}]", from_a, fname, r.getReferenceType(), r.getSource()))
+        count += 1
+    println(_fmt("Всего: {}", count))
+
+
+def action_xrefs_in_range():
+    start = askAddress(u"Начало диапазона", u"Start:")
+    end = askAddress(u"Конец диапазона", u"End (включительно):")
+    start = to_addr(start)
+    end = to_addr(end)
+
+    size = end.subtract(start) + 1
+    if size > 0x10000:
+        if not askYesNo(u"Большой диапазон",
+                        _fmt(u"Диапазон {} байт — может быть долго. Продолжить?", size)):
+            return
+
+    println(_fmt("=== Ссылки в {} – {} ===", start, end))
+    count = 0
+    refmgr = currentProgram.getReferenceManager()
+    aset = currentProgram.getAddressFactory().getAddressSet(start, end)
+    it = refmgr.getReferenceDestinationIterator(aset, True)
+    while it.hasNext():
+        dest = it.next()
+        for r in getReferencesTo(dest):
+            from_a = r.getFromAddress()
+            f = get_function_at_or_containing(from_a)
+            fname = f.getName() if f is not None else "-"
+            println(_fmt("  {}  →  {}   ({} / {})", from_a, dest, fname, r.getReferenceType()))
+            count += 1
+            if count >= 500:
+                println(u"... обрезано на 500")
+                println(_fmt("Всего (обрез.): {}", count))
+                return
+    println(_fmt("Всего: {}", count))
+
+
+def action_find_constant_xrefs():
+    dlg = ConstPickDialog()
+    DockingWindowManager.showDialog(dlg)
+    if dlg.was_cancelled():
+        return
+    val = dlg.selected
+    if val is None:
+        val_str = askString(u"Своё значение", u"Константа (hex или dec):", "0x258")
+        if val_str is None:
+            return
+        val_str = val_str.strip().lower()
+        val = int(val_str, 16) if val_str.startswith("0x") else int(val_str)
+
+    println(_fmt("=== Поиск immediate 0x{:X} ===", val))
+    listing = currentProgram.getListing()
+    count = 0
+    insns = listing.getInstructions(True)
+    while insns.hasNext() and count < 300:
+        insn = insns.next()
+        found = False
+        for i in range(insn.getNumOperands()):
+            objs = insn.getOpObjects(i)
+            if objs is None:
+                continue
+            for o in objs:
+                try:
+                    if hasattr(o, "getValue") and int(o.getValue()) == val:
+                        f = get_function_at_or_containing(insn.getAddress())
+                        fname = f.getName() if f is not None else "-"
+                        println(_fmt("  {}  [{}]  {}", insn.getAddress(), fname, insn))
+                        count += 1
+                        found = True
+                        break
+                except Exception:
+                    pass
+            if found:
+                break
+    println(_fmt("Найдено инструкций: {}", count))
+
+
+def action_rename_at_address():
+    addr = askAddress(u"Переименовать", u"Адрес:")
+    name = askString(u"Новое имя", u"Имя:", "new_name")
+    if name is None or name == "":
+        return
+    a = to_addr(addr)
+    f = get_function_at_or_containing(a)
+    if f is not None and f.getEntryPoint().equals(a):
+        safe_rename_function(a, name)
+    else:
+        safe_create_label(a, name)
+        if f is not None:
+            if askYesNo(u"Ещё и функцию?",
+                        _fmt(u"Переименовать и содержащую функцию {}?", f.getName())):
+                safe_rename_function(f.getEntryPoint(), name)
+
+
+def action_add_comment():
+    addr = askAddress(u"Комментарий", u"Адрес:")
+    kind = askChoice(u"Тип", u"Тип комментария:",
+                     [u"Plate (над блоком)", u"EOL (в конце строки)"],
+                     u"Plate (над блоком)")
+    text = askString(u"Текст", u"Текст комментария:")
+    if text is None or text == "":
+        return
+    if str(kind).startswith("Plate"):
+        add_plate_comment(addr, text)
+    else:
+        add_eol_comment(addr, text)
+
+
+def action_dump_function_info(addr=None):
+    if addr is None:
+        addr = askAddress(u"Инфо о функции", u"Адрес внутри функции:")
+    addr = to_addr(addr)
+    f = get_function_at_or_containing(addr)
+    if f is None:
+        println(_fmt("[-] Нет функции @ {}", addr))
+        return
+
+    println("=" * 60)
+    println(_fmt("Функция : {}", f.getName()))
+    println(_fmt("Entry   : {}", f.getEntryPoint()))
+    println(_fmt("Размер  : {} адресов", f.getBody().getNumAddresses()))
+    try:
+        println(_fmt("Calling : {}", f.getCallingConventionName()))
+    except Exception:
+        pass
+    try:
+        println(_fmt("Signature: {}", f.getSignature()))
+    except Exception:
+        pass
+    println("--- Callers ---")
+    action_trace_callers(f.getEntryPoint())
+    println("--- Callees ---")
+    action_trace_callees(f.getEntryPoint())
+    println("=" * 60)
+
+
+def action_bookmark_key_sites():
+    for addr, desc in KEY_LOCATIONS.items():
+        a = to_addr(addr)
+        createBookmark(a, "LimeRE", desc)
+        println(_fmt("[+] Bookmark @ {}  {}", a, desc))
+    println(u"Готово.  Window → Bookmarks")
+
+
+def action_goto_known():
+    items = []
+    for a, n in sorted(KNOWN_FUNCTIONS.items()):
+        items.append(("F  0x%08X  %s" % (a, n), a))
+    for a, n in sorted(KNOWN_RAM.items()):
+        items.append(("R  0x%08X  %s" % (a, n), a))
+    for a, n in sorted(KEY_LOCATIONS.items()):
+        items.append(("K  0x%08X  %s" % (a, n), a))
+
+    dlg = SymbolPickDialog(items, u"Перейти к символу")
+    DockingWindowManager.showDialog(dlg)
+    if dlg.was_cancelled() or dlg.selected is None:
+        return
+    addr = to_addr(dlg.selected)
+    goTo(addr)
+    println(_fmt("Переход → {}", addr))
+
+
+# ==============================================================================
+#  MAIN
+# ==============================================================================
+
+ACTION_MAP = {
+    "apply_names": action_apply_all_known_names,
+    "trace_callers": action_trace_callers,
+    "trace_callees": action_trace_callees,
+    "xrefs_to": action_xrefs_to_address,
+    "xrefs_range": action_xrefs_in_range,
+    "find_const": action_find_constant_xrefs,
+    "rename": action_rename_at_address,
+    "comment": action_add_comment,
+    "func_info": action_dump_function_info,
+    "bookmarks": action_bookmark_key_sites,
+    "goto": action_goto_known,
+}
+
+
+def run():
+    while True:
+        action_id = show_main_menu()
+        if action_id is None or action_id == "exit":
+            println(u"Выход.")
+            return
+        fn = ACTION_MAP.get(action_id)
+        if fn is None:
+            println(_fmt("Неизвестное действие: {}", action_id))
+            continue
+        try:
+            fn()
+        except CancelledException:
+            println(u"Отменено.")
+        except Exception as e:
+            println(_fmt("[!] Ошибка: {}", e))
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
+
+
+run()
