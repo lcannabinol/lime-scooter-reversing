@@ -9,7 +9,7 @@
 чистым: только идея проекта, поведение и цикл работы.
 
 Источники данных: `Lime Gen 3 Motor Controller Readout disassembled.ASM`,
-дампы RAM (`ram_*.bin`), Ghidra (`Pyghidra_helper.py`).
+дампы RAM (`dumps/ram_*.bin`), Ghidra (`Pyghidra_helper.py`).
 
 ---
 
