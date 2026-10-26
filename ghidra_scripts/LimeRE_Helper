@@ -35,6 +35,11 @@ try:
 except NameError:
     _string_types = (str,)
 
+try:
+    _integer_types = (int, long)
+except NameError:
+    _integer_types = (int,)
+
 
 def _fmt(s, *args):
     return s.format(*[str(a) for a in args])
@@ -418,22 +423,69 @@ def get_function_at_or_containing(addr):
     return f
 
 
+def _operand_matches_constant(op, val):
+    """Возвращает True, если operand содержит заданную константу."""
+    if op is None:
+        return False
+    try:
+        # Нормальный случай: Ghidra operand object с getValue()
+        if hasattr(op, "getValue"):
+            v = op.getValue()
+            if isinstance(v, _integer_types):
+                return v == val
+        # Иногда значение хранится как scalar
+        if hasattr(op, "getScalar"):
+            sc = op.getScalar()
+            if sc is not None:
+                try:
+                    v = int(sc.getValue())
+                    return v == val
+                except Exception:
+                    pass
+                try:
+                    v = int(sc.getSignedValue())
+                    return v == val
+                except Exception:
+                    pass
+        # Потихоньку пробуем строковое представление
+        if hasattr(op, "toString"):
+            s = str(op.toString())
+            if s.lower().startswith("0x"):
+                s = s[2:]
+            try:
+                return int(s, 16) == val
+            except Exception:
+                pass
+            try:
+                return int(s) == val
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
 def safe_rename_function(addr, new_name):
     addr = to_addr(addr)
     f = get_function_at_or_containing(addr)
     if f is None:
+        # Если адрес внутри функции, переименовываем именно её входную точку,
+        # избегая создания функции по середине блока.
+        target = addr
         f = createFunction(addr, new_name)
         if f is not None:
             println(_fmt("[+] Создана функция {} @ {}", new_name, addr))
             return True
         println(_fmt("[-] Нет функции @ {}", addr))
         return False
+
+    target = f.getEntryPoint()
     old = f.getName()
     if old == new_name:
         return True
     try:
         f.setName(new_name, SourceType.USER_DEFINED)
-        println(_fmt("[+] {}  →  {}   ({})", old, new_name, addr))
+        println(_fmt("[+] {}  →  {}   ({})", old, new_name, target))
         return True
     except Exception as e:
         println(_fmt("[!] Ошибка переименования {} → {}: {}", old, new_name, e))
@@ -602,6 +654,13 @@ def action_xrefs_in_range():
     start = to_addr(start)
     end = to_addr(end)
 
+    # Защита от перевёрнутого диапазона.
+    if start.compareTo(end) > 0:
+        tmp = start
+        start = end
+        end = tmp
+        println(u"[!] Диапазон был перевёрнут; обработан в прямом порядке.")
+
     size = end.subtract(start) + 1
     if size > 0x10000:
         if not askYesNo(u"Большой диапазон",
@@ -644,8 +703,9 @@ def action_find_constant_xrefs():
     println(_fmt("=== Поиск immediate 0x{:X} ===", val))
     listing = currentProgram.getListing()
     count = 0
+    max_hits = 300
     insns = listing.getInstructions(True)
-    while insns.hasNext() and count < 300:
+    while insns.hasNext() and count < max_hits:
         insn = insns.next()
         found = False
         for i in range(insn.getNumOperands()):
@@ -654,7 +714,7 @@ def action_find_constant_xrefs():
                 continue
             for o in objs:
                 try:
-                    if hasattr(o, "getValue") and int(o.getValue()) == val:
+                    if _operand_matches_constant(o, val):
                         f = get_function_at_or_containing(insn.getAddress())
                         fname = f.getName() if f is not None else "-"
                         println(_fmt("  {}  [{}]  {}", insn.getAddress(), fname, insn))
