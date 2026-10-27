@@ -108,7 +108,7 @@
 | `patch_for_60sec_unlock` | Python-скрипт патча Intel HEX (⚠️ не работает на стенде, оставлен для истории) |
 | `Pyghidra_helper.py` | Помощник для Ghidra при реверсе прошивки |
 | `Lime Gen 3 Motor Controller Readout disassembled.ASM` | Дизассемблированная прошивка |
-| `Lime Gen 3 Motor Controller Readout.HEX` / `FW.hex` | Readout прошивки (Intel HEX) |
+| `Lime Gen 3 Motor Controller Readout.HEX` | Сторонний readout прошивки (Intel HEX), только для сравнения. `FW.hex` удалён (2026-10-28): это была ESP32/picocosan-сборка, не прошивка контроллера |
 | `my_ghidra_RE_Lime Gen3 25 kmh unlocked.hex` | Ghidra ASM-дамп реверса (не прошивка; см. ADDRBOOK §6b) |
 | `dumps/ram_*.bin` | Дампы RAM в разных состояниях (lock, ride, 30s/60s и т.д.) — все .bin-файлы хранятся в `dumps/` |
 
